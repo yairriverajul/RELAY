@@ -17,7 +17,6 @@ CONTRACT_ADDRESS = Web3.to_checksum_address(
 )
 
 # Private key de PRUEBA (la que autorizaste usar aquí).
-# En Render usaremos una variable de entorno, pero dejamos este valor como fallback.
 PRIVATE_KEY = os.environ.get(
     "PRIVATE_KEY",
     "0x3a2a62a60b73ab3568670f459cf50aae33de80de95aeae495a4098981a3716da"
@@ -33,12 +32,12 @@ ABI_JSON = [
             {"internalType": "int16", "name": "temperatureTimes10", "type": "int16"},
             {"internalType": "uint16", "name": "humidityTimes10", "type": "uint16"},
             {"internalType": "uint256", "name": "timestampMs", "type": "uint256"},
-            {"internalType": "string", "name": "cid", "type": "string"}
+            {"internalType": "string", "name": "cid", "type": "string"},
         ],
         "name": "storeReading",
         "outputs": [],
         "stateMutability": "nonpayable",
-        "type": "function"
+        "type": "function",
     }
 ]
 
@@ -63,6 +62,11 @@ print("[INFO] Relayer usando cuenta:", account.address)
 contract = w3.eth.contract(address=CONTRACT_ADDRESS, abi=ABI_JSON)
 
 
+@app.get("/")
+def root():
+    return {"status": "ok", "message": "Relayer funcionando"}
+
+
 def subir_a_pinata(payload: dict) -> Optional[str]:
     """
     Sube un JSON a Pinata y devuelve el CID (hash IPFS).
@@ -74,7 +78,7 @@ def subir_a_pinata(payload: dict) -> Optional[str]:
 
     headers = {
         "Authorization": f"Bearer {PINATA_JWT}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
     }
     try:
         r = requests.post(PINATA_URL, json=payload, headers=headers, timeout=30)
@@ -91,48 +95,55 @@ def subir_a_pinata(payload: dict) -> Optional[str]:
 @app.post("/api/lecturas")
 async def recibir_lectura(req: Request):
     """
-    Endpoint que recibe lecturas del "dispositivo" (ESP32/Wokwi).
+    Espera un JSON del ESP32/Wokwi con:
+    {
+        "device_id": "esp32-dht22-aula-1",
+        "temperature": 37.9,
+        "humidity": 70.0,
+        "timestamp_ms": 1731000000000
+    }
     """
     data = await req.json()
     print("[DEBUG] Payload recibido:", data)
 
-    device_id    = data.get("device_id", "unknown-device")
-    temp_c       = float(data["temperature"])
-    hum          = float(data["humidity"])
+    device_id = data.get("device_id", "unknown-device")
+    temp_c = float(data["temperature"])
+    hum = float(data["humidity"])
     timestamp_ms = int(data["timestamp_ms"])
 
-    # Escalar para almacenarlo como enteros en el contrato
+    # Escalar a enteros: ej. 25.3 C -> 253, 70.1% -> 701
     temp_times10 = int(round(temp_c * 10))
-    hum_times10  = int(round(hum * 10))
+    hum_times10 = int(round(hum * 10))
 
     # 1) Subir JSON completo de la lectura a Pinata
     pinata_payload = {
         "device_id": device_id,
         "temperature_c": temp_c,
         "humidity_percent": hum,
-        "timestamp_ms": timestamp_ms
+        "timestamp_ms": timestamp_ms,
     }
     cid = subir_a_pinata(pinata_payload) or ""
 
-    # 2) Construir y enviar transacción a storeReading(...)
+    # 2) Construir transacción a storeReading(...)
     nonce = w3.eth.get_transaction_count(account.address)
 
     tx = contract.functions.storeReading(
-        device_id,
-        temp_times10,
-        hum_times10,
-        timestamp_ms,
-        cid
-    ).build_transaction({
-        "from": account.address,
-        "nonce": nonce,
-        "gas": 300000,
-        "gasPrice": w3.eth.gas_price,
-        "chainId": CHAIN_ID,
-    })
+        device_id, temp_times10, hum_times10, timestamp_ms, cid
+    ).build_transaction(
+        {
+            "from": account.address,
+            "nonce": nonce,
+            "gas": 300000,
+            "gasPrice": w3.eth.gas_price,
+            "chainId": CHAIN_ID,
+        }
+    )
 
     signed_tx = w3.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
-    tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+
+    # ⚠️ CAMBIO IMPORTANTE PARA web3 7.x:
+    # antes: signed_tx.rawTransaction
+    tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
 
     print("[INFO] Tx enviada:", tx_hash.hex())
     receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
@@ -142,5 +153,5 @@ async def recibir_lectura(req: Request):
         "status": "ok",
         "tx_hash": tx_hash.hex(),
         "block": receipt.blockNumber,
-        "cid": cid
+        "cid": cid,
     }
