@@ -19,7 +19,7 @@ CONTRACT_ADDRESS = Web3.to_checksum_address(
 # Private key de PRUEBA (la que autorizaste usar aquí).
 PRIVATE_KEY = os.environ.get(
     "PRIVATE_KEY",
-    "a67e394c287000f8c9496449b7739df906b6b74080348483dfc95a7a42a2bf84")
+    "c0b927c04c3dd08d8951923103450a528d8d786cb153985bb6dde7c1d02c1ddf")
 
 
 
