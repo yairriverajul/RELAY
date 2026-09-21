@@ -1,8 +1,10 @@
 import threading
+from pathlib import Path
 from typing import Optional
 
 import requests
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from web3 import Web3
 
@@ -26,6 +28,12 @@ CHAIN_ID = 11155111  # Sepolia
 # True: responde cuando la transacción ya fue minada (10-30 s).
 # False: responde enseguida con el tx_hash (mejor si el ESP32 tiene timeout corto).
 ESPERAR_MINADO = False
+
+# Margen extra sobre el gas estimado (1.3 = 30 % más).
+MARGEN_GAS = 1.3
+
+# Archivo del panel web, ubicado junto a este archivo en el repositorio.
+PANEL_HTML = Path(__file__).parent / "view.html"
 
 ABI_JSON = [
     {
@@ -76,9 +84,21 @@ class Lectura(BaseModel):
     timestamp_ms: int
 
 
-@app.get("/")
+# GET para el navegador y HEAD para el chequeo de salud de Render.
+@app.api_route("/", methods=["GET", "HEAD"])
 def root():
     return {"status": "ok", "message": "Relayer funcionando"}
+
+
+@app.get("/view", response_class=HTMLResponse)
+def ver_panel():
+    """Muestra el panel web (view.html) que lee las lecturas desde Sepolia."""
+    if not PANEL_HTML.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="No se encontró view.html en la raíz del repositorio",
+        )
+    return HTMLResponse(PANEL_HTML.read_text(encoding="utf-8"))
 
 
 def subir_a_pinata(payload: dict) -> Optional[str]:
@@ -128,16 +148,20 @@ def recibir_lectura(lectura: Lectura):
     try:
         with tx_lock:
             nonce = w3.eth.get_transaction_count(account.address, "pending")
-            tx = contract.functions.storeReading(
+            funcion = contract.functions.storeReading(
                 lectura.device_id,
                 temp_times10,
                 hum_times10,
                 lectura.timestamp_ms,
                 cid,
-            ).build_transaction(
+            )
+            # Estima el gas (falla aquí si el contrato rechazaría la lectura) y añade margen.
+            gas_estimado = funcion.estimate_gas({"from": account.address})
+            tx = funcion.build_transaction(
                 {
                     "from": account.address,
                     "nonce": nonce,
+                    "gas": int(gas_estimado * MARGEN_GAS),
                     "gasPrice": w3.eth.gas_price,
                     "chainId": CHAIN_ID,
                 }
@@ -177,4 +201,5 @@ def recibir_lectura(lectura: Lectura):
         "block": receipt.blockNumber,
         "cid": cid,
     }
+
 
