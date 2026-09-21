@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lecturas del sensor en Sepolia</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;600&family=Instrument+Serif&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #eef1ef; --ink: #14201f; --muted: #5b6b69; --line: #cbd5d2;
+    --temp: #b4400f; --hum: #17608f; --panel: #f8faf9;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --paper: #101817; --ink: #e8efed; --muted: #8fa19e; --line: #2a3835;
+            --temp: #f08a5d; --hum: #6fb6e6; --panel: #16201f; }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--paper); color: var(--ink);
+    font-family: "Instrument Sans", system-ui, sans-serif; line-height: 1.5; }
+  main { max-width: 960px; margin: 0 auto; padding: 32px 20px 56px; }
+  h1 { font-family: "Instrument Serif", Georgia, serif; font-weight: 400;
+       font-size: clamp(28px, 5vw, 40px); margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 28px; font-size: 15px; }
+  .sub a { color: inherit; }
+  .hero { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 640px) { .hero { grid-template-columns: 1fr; } }
+  .gauge { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 20px; }
+  .gauge h2 { margin: 0; font-size: 15px; font-weight: 600; color: var(--muted); }
+  .value { font-family: "Instrument Serif", Georgia, serif; font-size: clamp(64px, 12vw, 104px);
+           line-height: 1; margin: 6px 0 10px; }
+  .value small { font-size: 0.35em; margin-left: 4px; color: var(--muted); }
+  .t .value { color: var(--temp); } .h .value { color: var(--hum); }
+  svg.spark { width: 100%; height: 72px; display: block; }
+  .status { margin: 18px 0 28px; font-size: 14px; color: var(--muted); }
+  .status.err { color: #b3261e; }
+  h3 { font-size: 16px; margin: 0 0 10px; }
+  .wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; min-width: 520px; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; }
+  tr:last-child td { border-bottom: 0; }
+  td.n { font-variant-numeric: tabular-nums; }
+  button { font: inherit; padding: 8px 14px; border-radius: 6px; border: 1px solid var(--line);
+           background: var(--panel); color: var(--ink); cursor: pointer; }
+  button:focus-visible, a:focus-visible { outline: 2px solid var(--hum); outline-offset: 2px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Lecturas del sensor</h1>
+  <p class="sub">Datos leídos directamente del contrato en Sepolia.
+    <a id="contractLink" target="_blank" rel="noopener">Ver contrato en Etherscan</a></p>
+
+  <section class="hero" aria-live="polite">
+    <div class="gauge t"><h2>Temperatura</h2>
+      <div class="value" id="tv">--<small>°C</small></div><svg class="spark" id="ts" viewBox="0 0 300 72" preserveAspectRatio="none"></svg></div>
+    <div class="gauge h"><h2>Humedad</h2>
+      <div class="value" id="hv">--<small>%</small></div><svg class="spark" id="hs" viewBox="0 0 300 72" preserveAspectRatio="none"></svg></div>
+  </section>
+
+  <p class="status" id="status">Cargando lecturas…</p>
+
+  <h3>Últimas lecturas</h3>
+  <div class="wrap">
+    <table>
+      <thead><tr><th>Nº</th><th>Fecha</th><th>Dispositivo</th><th>Temp.</th><th>Humedad</th><th>IPFS</th></tr></thead>
+      <tbody id="rows"><tr><td colspan="6">Cargando…</td></tr></tbody>
+    </table>
+  </div>
+  <p style="margin-top:16px"><button id="refresh" type="button">Actualizar ahora</button></p>
+</main>
+
+<script>
+// ============ CONFIGURACIÓN ============
+const RPC_URL = "https://ethereum-sepolia-rpc.publicnode.com";
+const CONTRACT_ADDRESS = "0xF598E4A59558463cE78b87F7B5b7c6Fe43326335";
+const CHAIN_ID = 11155111;
+const MAX_LECTURAS = 20;      // cuántas lecturas mostrar
+const REFRESCO_MS = 30000;    // actualización automática
+// =======================================
+
+const ABI = [
+  {"inputs":[],"name":"getReadingsCount","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},
+  {"inputs":[{"internalType":"uint256","name":"id","type":"uint256"}],"name":"getReading","outputs":[{"components":[
+    {"internalType":"string","name":"deviceId","type":"string"},
+    {"internalType":"int16","name":"temperatureTimes10","type":"int16"},
+    {"internalType":"uint16","name":"humidityTimes10","type":"uint16"},
+    {"internalType":"uint256","name":"timestampMs","type":"uint256"},
+    {"internalType":"string","name":"cid","type":"string"},
+    {"internalType":"address","name":"relayer","type":"address"},
+    {"internalType":"uint256","name":"blockTimestamp","type":"uint256"}],
+    "internalType":"struct SensorRegistry.Reading","name":"","type":"tuple"}],"stateMutability":"view","type":"function"}
+];
+
+const $ = id => document.getElementById(id);
+$("contractLink").href = "https://sepolia.etherscan.io/address/" + CONTRACT_ADDRESS;
+
+function loadScript(src) {
+  return new Promise((ok, fail) => {
+    const s = document.createElement("script");
+    s.src = src; s.onload = ok; s.onerror = fail; document.head.appendChild(s);
+  });
+}
+async function loadEthers() {
+  if (window.ethers) return;
+  try { await loadScript("https://cdnjs.cloudflare.com/ajax/libs/ethers/6.13.4/ethers.umd.min.js"); }
+  catch (e) { await loadScript("https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"); }
+}
+
+function spark(id, values, color) {
+  const svg = $(id);
+  if (values.length < 2) { svg.innerHTML = ""; return; }
+  const min = Math.min(...values), max = Math.max(...values), span = (max - min) || 1;
+  const pts = values.map((v, i) => [
+    (i / (values.length - 1)) * 296 + 2,
+    68 - ((v - min) / span) * 60
+  ]);
+  const last = pts[pts.length - 1];
+  svg.innerHTML =
+    '<polyline fill="none" stroke="' + color + '" stroke-width="2" vector-effect="non-scaling-stroke" points="' +
+    pts.map(p => p[0].toFixed(1) + "," + p[1].toFixed(1)).join(" ") + '"/>' +
+    '<circle cx="' + last[0] + '" cy="' + last[1] + '" r="4" fill="' + color + '"/>';
+}
+
+function fmtDate(ms) {
+  const d = new Date(ms);
+  return isNaN(d) ? "-" : d.toLocaleString("es", { dateStyle: "short", timeStyle: "medium" });
+}
+function esc(s) { return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+
+let contract;
+async function cargar() {
+  const st = $("status");
+  try {
+    if (!contract) {
+      await loadEthers();
+      const provider = new ethers.JsonRpcProvider(RPC_URL, CHAIN_ID, { staticNetwork: true });
+      contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, provider);
+    }
+    const total = Number(await contract.getReadingsCount());
+    if (total === 0) {
+      st.className = "status"; st.textContent = "El contrato aún no tiene lecturas. Envía un dato desde el dispositivo.";
+      $("rows").innerHTML = '<tr><td colspan="6">Sin lecturas todavía</td></tr>';
+      return;
+    }
+    const desde = Math.max(0, total - MAX_LECTURAS);
+    const ids = []; for (let i = desde; i < total; i++) ids.push(i);
+    const lecturas = await Promise.all(ids.map(async id => {
+      const r = await contract.getReading(id);
+      return { id, dev: r.deviceId, t: Number(r.temperatureTimes10) / 10, h: Number(r.humidityTimes10) / 10,
+               ts: Number(r.timestampMs), cid: r.cid };
+    }));
+
+    const ult = lecturas[lecturas.length - 1];
+    $("tv").innerHTML = ult.t.toFixed(1) + "<small>°C</small>";
+    $("hv").innerHTML = ult.h.toFixed(1) + "<small>%</small>";
+    spark("ts", lecturas.map(l => l.t), getComputedStyle(document.documentElement).getPropertyValue("--temp").trim());
+    spark("hs", lecturas.map(l => l.h), getComputedStyle(document.documentElement).getPropertyValue("--hum").trim());
+
+    $("rows").innerHTML = lecturas.slice().reverse().map(l =>
+      "<tr><td class='n'>" + l.id + "</td><td>" + fmtDate(l.ts) + "</td><td>" + esc(l.dev) +
+      "</td><td class='n'>" + l.t.toFixed(1) + " °C</td><td class='n'>" + l.h.toFixed(1) + " %</td><td>" +
+      (l.cid ? "<a target='_blank' rel='noopener' href='https://gateway.pinata.cloud/ipfs/" + encodeURIComponent(l.cid) + "'>ver</a>" : "-") +
+      "</td></tr>").join("");
+
+    st.className = "status";
+    st.textContent = "Última lectura: " + fmtDate(ult.ts) + ". Total guardado: " + total +
+                     ". Se actualiza cada " + (REFRESCO_MS / 1000) + " s.";
+  } catch (e) {
+    console.error(e);
+    st.className = "status err";
+    st.textContent = "No se pudieron leer los datos. Revisa tu conexión y pulsa Actualizar ahora. Detalle: " + (e.shortMessage || e.message);
+  }
+}
+
+$("refresh").addEventListener("click", cargar);
+cargar();
+setInterval(cargar, REFRESCO_MS);
+</script>
+</body>
+</html>
